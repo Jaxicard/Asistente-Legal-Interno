@@ -3,15 +3,14 @@ from PyPDF2 import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import FAISS
-from langchain.chains.question_answering import load_qa_chain
-from langchain.prompts import PromptTemplate
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import PromptTemplate
 import os
 
 # --- 1. CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(page_title="Asistente Legal Interno", page_icon="⚖️", layout="wide")
 
 # --- 2. REGLAS ESTRICTAS DEL AGENTE (SYSTEM PROMPT) ---
-# Aquí definimos cómo debe comportarse para evitar que invente cosas.
 PROMPT_TEMPLATE = """
 Eres el Asistente Legal y de Procesos Internos de la empresa.
 Tu único objetivo es responder las dudas de los empleados basándote ESTRICTAMENTE en el contexto proporcionado (los documentos subidos).
@@ -33,7 +32,8 @@ def get_pdf_text(pdf_docs):
     for pdf in pdf_docs:
         pdf_reader = PdfReader(pdf)
         for page in pdf_reader.pages:
-            text += page.extract_text()
+            if page.extract_text():
+                text += page.extract_text()
     return text
 
 def get_text_chunks(text):
@@ -47,24 +47,23 @@ def get_vector_store(text_chunks, api_key):
     return vector_store
 
 def get_conversational_chain():
-    # Usamos Gemini 1.5 Flash porque es rapidísimo y gratuito en su capa de desarrollador
-    model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.1) # Temperatura baja para que no sea creativo, sino preciso
-    prompt = PromptTemplate(template=PROMPT_TEMPLATE, input_variables=["context", "question"])
-    chain = load_qa_chain(model, chain_type="stuff", prompt=prompt)
+    model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.1) 
+    prompt = PromptTemplate.from_template(PROMPT_TEMPLATE)
+    # Sintaxis moderna de LangChain para procesar documentos
+    chain = create_stuff_documents_chain(model, prompt)
     return chain
 
 # --- 4. INTERFAZ VISUAL ---
 st.title("⚖️ Asistente de Procesos y Legal")
 st.markdown("Pregúntame sobre políticas de la empresa, procesos internos o plantillas legales.")
 
-# Obtenemos la API Key de los "Secretos" de Streamlit
 api_key = st.secrets.get("GOOGLE_API_KEY")
 
 if not api_key:
-    st.error("Error: No se ha configurado la API Key de Google en los secretos de Streamlit.")
+    st.error("Error: No se ha configurado la API Key de Google en los secretos de Streamlit (Settings -> Secrets).")
     st.stop()
 
-# --- BARRA LATERAL (Solo para ti / Administrador) ---
+# --- BARRA LATERAL ---
 with st.sidebar:
     st.header("📂 Panel de Administración")
     st.write("Sube aquí los PDFs con manuales y políticas.")
@@ -85,28 +84,24 @@ with st.sidebar:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Mostrar historial de chat
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Entrada de usuario
 user_question = st.chat_input("Escribe tu duda aquí (ej. ¿Cuántos días de vacaciones me corresponden?)")
 
 if user_question:
-    # Mostrar pregunta del usuario
     st.session_state.messages.append({"role": "user", "content": user_question})
     with st.chat_message("user"):
         st.markdown(user_question)
 
-    # Buscar respuesta
     with st.chat_message("assistant"):
         if "vector_store" in st.session_state:
             with st.spinner("Buscando en los documentos legales..."):
                 docs = st.session_state["vector_store"].similarity_search(user_question)
                 chain = get_conversational_chain()
-                response = chain({"input_documents": docs, "question": user_question}, return_only_outputs=True)
-                reply = response["output_text"]
+                # Ejecutamos la cadena con la sintaxis moderna
+                reply = chain.invoke({"context": docs, "question": user_question})
                 st.markdown(reply)
                 st.session_state.messages.append({"role": "assistant", "content": reply})
         else:
